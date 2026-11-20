@@ -389,32 +389,97 @@ I also used `frozen=True` to prevent a neuron's defining properties from being m
 
 # Stage 2 — Implementing synapses
 
+We understand that a neuron is not operating in isolation. It receives signals from other units through connections called synapses. 
+
+<div style="display: flex; gap: 20px; align-items: center;">
+  <img src="assets\excin.png" width="500">
+</div>
+For our simulation, a synapse represents a directed connection between two units (source and target):
+- A source: where the signal originates.
+- A target: where the signal is delivered.
+
+Two additional properties a synapse possesses are its type and delay:
+
+- A type or kind: whether the connection is excitatory or inhibitory.
+- A delay: how many time steps it takes for the signal to arrive.
+
+Also, the connection from A to B is not necessarily equivalent to the connection from B to A. This means we must treat connections as directed edges.
+
+
+I created `synapse.py` and defined a class:
+
+```python
+class Synapses:
+  def __innit__(self, source, target, kind, delay):
+    self.source = source
+    self.target = target
+    self.kind = kind
+    self.delay = delay
+```
+
+I can instantiate this as:
+```python
+connection1 = Synapse("N1", "N2", "excitatory", 1)
+connection2 = Synapse("N2", "N3", "inhibitory", 2)
+```
+I needed to make sure `kind` only takes restricted values (either `excitatory` or `inhibitory`) and use `frozen=True` of `@dataclass` decorator to prevent accidental modification.
+
+```python
+from enum import Enum
+
+class SynapseType(str, Enum):
+    EXCITATORY = "excitatory"
+    INHIBITORY = "inhibitory"
+
+@dataclass(frozen=True)
+class Synapse:
+    source: str
+    target: str
+    kind: SynapseType = SynapseType.EXCITATORY
+    delay: int = 1
+```
+There are still some invalid configurations I need to prevent. 
+- A synapse cannot have an empty source or target.
+- A synaptic delay must be atleast one time step.
+- The synapse type must be one of our defined enum values.
+
+I enforced these conditions using `__post_init__`, a special dataclass method that executes immediately after initialization.
+
+```python
+"""Synapses connecting source units to target neurons."""
+from dataclasses import dataclass
+from enum import Enum
+
+
+class SynapseType(str, Enum):
+    EXCITATORY = "excitatory"
+    INHIBITORY = "inhibitory"
+
+
+@dataclass(frozen=True)
+class Synapse:
+    source: str
+    target: str
+    kind: SynapseType = SynapseType.EXCITATORY
+    delay: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.source or not self.target:
+            raise ValueError("Synapse source and target must be non-empty.")
+        if self.delay < 1:
+            raise ValueError("Synaptic delay must be at least one time step.")
+        if isinstance(self.kind, str):
+            object.__setattr__(self, "kind", SynapseType(self.kind))
+```
+
+This Synapse currently represents the structure of a connection. The actual transmission of signals will be handled when we implement the network's simulation logic.
+
 I investigated how the delay affects the **time** at which a signal becomes available to the receiving neuron. For instance, if neuron A fires at time $t=0$ and its synapse has a delay of one time step, the signal should be available to neuron B at time $t=1$.
 
-I created `synapse.py` to represent the **connections** through which neurons influence one another. I introduced two synapse types:
-
-- Excitatory.
-- Inhibitory.
-
-Each synapse will need to store its source neuron, target neuron, type, and transmission delay.
-
-
-**Deliverables:**
-
-- A synapse representation.
-- Excitatory and inhibitory synapse types.
-- Configurable synaptic delays.
-- Tests for signal propagation.
-
-**Status:** Not started.
 
 # Stage 3 — Constructing a neural network
 
-**File:** `network.py`
-
-**Objective:** Connect individual neurons and synapses into a network.
-
-Now that I have individual neurons and their connections, I can construct a network.
+So far I have constructed individual neurons and structure of the connections. Now I can connect individual neurons and synapses to form a network.
 
 The network will maintain:
 
@@ -423,7 +488,7 @@ The network will maintain:
 - The activity history of each neuron.
 - The current simulation time.
 
-I will implement a discrete-time update procedure.
+I implemented a discrete-time update procedure.
 
 At each time step, the network will:
 
@@ -434,464 +499,300 @@ At each time step, the network will:
 5. Determine the firing state of each neuron.
 6. Record the resulting activity.
 
-All neurons must be updated synchronously. A neuron being updated at time \(t\) must not accidentally use another neuron's newly computed state from that same time step when the connection should refer to an earlier time.
+All neurons must be updated synchronously. A neuron being updated at time $t$ must not accidentally use another neuron's newly computed state from that same time step when the connection should refer to an earlier time.
 
-I will begin with small networks and gradually increase their complexity.
+I created `network.py` and introduced a Network class and maintain three primary data structures:
 
-**Deliverables:**
+- `neurons`: A dictionary mapping neuron names to their respective Neuron objects. I use a dictionary because each neuron has a unique name, allowing me to retrieve it directly.
+- `synapses`: A list containing the connections between units.
+- `history`: A record of the activity of each neuron and external source over time.
 
-- A `Network` class.
-- Methods to add neurons and synapses.
-- A discrete-time update method.
-- Tests for simple network configurations.
+Also `time`, which tracks the current simulation time step.
 
-**Status:** Not started.
+```python
+class Network:
+
+  def __init__(self) -> None:
+      self.neurons: dict[str, Neuron] = {}
+      self.synapses: list[Synapse] = []
+      self.history: dict[str, list[bool]] = defaultdict(list)
+      self.time = 0
+```
+This works like a template or a biolerplate for our network. When I instantiate an object of this class, I get an empty network. I now need methods to add neurons and synapses to this network. 
+
+When adding a neuron, I first check whether another neuron with the same name already exists. Since I use neuron names as dictionary keys, allowing duplicates would cause one neuron to overwrite another. Similarly, when adding a synapse, I check whether its target corresponds to an existing neuron. This is because every connection must deliver its signal to a neuron within the network.
+
+```python
+  def add_neuron(self, neuron: Neuron) -> None:
+      if neuron.name in self.neurons:
+          raise ValueError(f"Neuron {neuron.name!r} already exists.")
+
+      self.neurons[neuron.name] = neuron
+      self.history.setdefault(neuron.name, [])
+
+  def add_synapse(self, synapse: Synapse) -> None:
+    if synapse.target not in self.neurons:
+        raise ValueError(f"Unknown target neuron: {synapse.target!r}")
+
+    self.synapses.append(synapse)
+    self.history.setdefault(synapse.source, [])
+```
+ I allow a synapse's source to be a name that does not correspond to an internal neuron. Why? Because I want to support external inputs (afferents) entering the network. For example, an external source A could stimulate an internal neuron Y, even though A is not itself represented as a neuron in my simulation.
+
+I can identify these external sources by checking which synaptic sources do not correspond to internal neurons.
+
+Since I implemented a discrete-time update procedure, a neuron does not necessarily respond to a signal immediately. The signal may take one or more time steps to arrive depending on the synaptic delay.
+
+In below expression, neuron A fires at time $t=0$, and neuron Y receives this signal at time $t=1$, because the synapse has a delay of $d=1$
+
+$$
+A \xrightarrow{d=1} Y
+$$
+
+A's activity at $t=0$ can influence B at $t=1$, but it must not influence B's state at $t=0$ when the synaptic delay is $1$.
+
+To implement this, I need to remember the activity of each source at previous time steps. Therefore, I maintain a history of every source:
+
+```python
+self.history: dict[str, list[bool]] = defaultdict(list)
+```
+for instance, if the activity of A over three time steps is:
+
+```python
+history["A"] = [True, False, True]
+```
+This tells me that `A` was active at `t=0`, inactive at `t=1`, and then active again at `t=2`
+
+History allows me to determine whether a signal was active at the time it should have been transmitted.
+
+```python
+def _was_active(self, source: str, time_index: int) -> bool:
+    if time_index < 0:
+        return False
+
+    values = self.history.get(source, [])
+    return time_index < len(values) and bool(values[time_index])
+```
+If the requested time index is negative, I treat the source as inactive. This means that all neurons initially start with no previous activity.
+
+To implement the discrete-time update procedure, I will create the `step()` method. At every simulation step, I need to determine the next state of every neuron.
+
+Since we know, if I update A first and immediately overwrite its activity, B might accidentally read A's newly calculated state during the same time step. This would make the result dependent on the order in which I iterate through the neurons. Instead, I want all neurons to calculate their next states using previously recorded activity. Only after every neuron has been evaluated should I commit the new states to history. 
+
+```python
+current: dict[str, bool] = {
+    source: bool(external_activity.get(source, False))
+    for source in self.external_sources
+}
+```
+This dictionary holds the activity that will be recorded for the current time step.
+
+Next, in order to efficiently examine all incoming connections when calculating a neuron's next state, I grouped synapses according to their target neuron.
+
+```python
+incoming: dict[str, list[Synapse]] = defaultdict(list)
+
+for synapse in self.synapses:
+    incoming[synapse.target].append(synapse)
+```
+
+For each incoming synapse, I calculate the time at which its source activity should be read:
+$$
+t_{\text{source}} = t_{\text{current}} - d
+$$
+where $(d)$ is the synaptic delay.
+
+I then use `_was_active()` to retrieve the source's activity at that earlier time.
+
+If the synapse is inhibitory, an active signal sets the inhibitory veto. Otherwise, an active excitatory signal increments the excitatory count.
+
+```python
+for name, neuron in self.neurons.items():
+    excitatory_count = 0
+    inhibitory_active = False
+
+    for synapse in incoming[name]:
+        source_time = self.time - synapse.delay
+        active = self._was_active(synapse.source, source_time)
+
+        if synapse.kind is SynapseType.INHIBITORY:
+            inhibitory_active = inhibitory_active or active
+        elif active:
+            excitatory_count += 1
+
+    current[name] = neuron.fires(
+        excitatory_count,
+        inhibitory_active
+    )
+```
+
+Notice that I am not directly modifying the neuron's historical activity here. I am only calculating its next firing state. The actual firing rule is delegated to the Neuron class, which keeps the network responsible for coordinating components rather than duplicating neuronal behaviour.
+
+Once every neuron has been evaluated, I can finally append the calculated states to their respective histories. 
+
+```python
+for source in self.external_sources:
+    self.history[source].append(current[source])
+
+for name in self.neurons:
+    self.history[name].append(current[name])
+
+self.time += 1
+return current
+```
+with this final step, I ensured that all newly calculated states become available together. The network therefore updates synchronously, independently of the order in which neurons are stored or iterated over.
+
+Calling `step()` repeatedly would work, but since I also wanted a convenient way to simulate a network over several time steps with a predefined input schedule, I introduce a `run()` method that accepts:
+
+- The number of time steps to simulate.
+- An optional schedule specifying which external sources are active at particular time steps.
+
+At each time step, `run()` retrieves the corresponding external inputs and calls `step()`. It returns a list containing the network's output at every time step.
+
+With this basic implementation in place, I needed to verify that the network behaved as expected. I started with three small configurations that tested the most important properties of my implementation.
+
+**Config1: Synaptic Delay** 
+
+I create a neuron Y with a firing threshold of 1 and connect an external source A to it with a delay of one time step. I activate A at time step 0 and deactivate it at time step 1. I expect Y to remain inactive at time step 0 and become active at time step 1.
+
+```python
+    def test_one_step_delay(self):
+        net = Network()
+        net.add_neuron(Neuron("Y", 1))
+        net.add_synapse(Synapse("A", "Y", delay=1))
+        first = net.step({"A": True})
+        second = net.step({"A": False})
+        self.assertFalse(first["Y"])
+        self.assertTrue(second["Y"])
+```
+**Config2: AND Gate** 
+
+I create a neuron Y with a threshold of 2 and connect two excitatory external sources, A and B, to it. I activate both inputs simultaneously. Since the neuron requires two excitatory inputs to fire, it should activate once both signals arrive.
+
+```python
+    def test_and_gate(self):
+        net = Network()
+        net.add_neuron(Neuron("Y", 2))
+        net.add_synapse(Synapse("A", "Y"))
+        net.add_synapse(Synapse("B", "Y"))
+        net.step({"A": True, "B": True})
+        result = net.step({})
+        self.assertTrue(result["Y"])
+```
+
+**Config2: Inhibitory Veto** 
+I create a neuron Y with a threshold of 1. I connect two external sources to it:
+
+- A through an excitatory synapse.
+- B through an inhibitory synapse.
+
+I activate both sources simultaneously. Even though the excitatory input is sufficient to meet the firing threshold, the active inhibitory input should prevent the neuron from firing.
+
+```python
+    def test_inhibitory_veto(self):
+        net = Network()
+        net.add_neuron(Neuron("Y", 1))
+        net.add_synapse(Synapse("A", "Y", SynapseType.EXCITATORY))
+        net.add_synapse(Synapse("B", "Y", SynapseType.INHIBITORY))
+        net.step({"A": True, "B": True})
+        result = net.step({})
+        self.assertFalse(result["Y"])
+```
 
 # Stage 4 — Simulating network activity
 
-**File:** `simulation.py`
-
-**Objective:** Run networks over sequences of external inputs and inspect their behavior.
-
-I now need a convenient way to run experiments.
-
-Rather than manually advancing a network one time step at a time, I will create a simulation interface that accepts an input schedule and a number of time steps.
-
-I want to inspect the activity of every neuron over time.
-
-A simple table should be sufficient initially:
-
-| Time | Neuron A | Neuron B | Neuron C |
-|---:|---:|---:|---:|
-| 0 | 1 | 0 | 0 |
-| 1 | 0 | 1 | 0 |
-| 2 | 0 | 0 | 1 |
-
-The values above are illustrative. The actual output will depend on the network being simulated.
-
-**Deliverables:**
-
-- A simulation function.
-- Input scheduling.
-- Activity-history collection.
-- A readable trace of neuronal activity.
-
-**Status:** Not started.
-
-# Stage 5 — Implementing temporal propositional logic
-
-**Directory:** `logic/`
-
-**Files:**
-
-- `logic/expressions.py`
-- `logic/temporal_logic.py`
-
-**Objective:** Represent and evaluate the temporal propositional expressions introduced in the paper.
-
-At this point, I will have a working network simulator. I now want a separate representation of the logical expressions that describe network behavior.
-
-I will begin with the basic expression types:
-
-- Variables.
-- Temporal shifts.
-- Disjunction.
-- Conjunction.
-- Conjunction with negation.
-
-I will represent expressions using Python classes, forming an expression tree.
-
-The evaluator will need access to the activity history of the relevant neurons.
-
-For example:
-
-\[
-S(P\land\neg Q)
-\]
-
-should be evaluated using the values of \(P\) and \(Q\) at the preceding time step.
-
-I will also decide how to handle times before the beginning of a simulation. Initially, I may use a false-valued initial history, but I will document this as a simulation convention rather than assume that it is a universal rule of the original paper.
-
-**Deliverables:**
-
-- Expression classes.
-- Temporal shift evaluation.
-- Boolean operator evaluation.
-- Tests for nested temporal expressions.
-
-**Status:** Not started.
-
-# Stage 6 — Reconstructing Figures 1a–1d
-
-**Directory:** `experiments/`
-
-**Files:**
-
-- `experiments/figure_1a.py`
-- `experiments/figure_1b.py`
-- `experiments/figure_1c.py`
-- `experiments/figure_1d.py`
-
-**Objective:** Reconstruct the elementary network constructions used in Theorem II.
-
-Theorem II states that every TPE is realizable by a network of order zero.
-
-The authors use four fundamental network constructions in Figures 1a–1d.
-
-These correspond to:
-
-| Figure | Logical expression |
-|---|---|
-| 1a | \(S(P_1)\) |
-| 1b | \(S(P_1\lor P_2)\) |
-| 1c | \(S(P_1\land P_2)\) |
-| 1d | \(S(P_1\land\neg P_2)\) |
-
-I will reconstruct each one independently.
-
-For every figure, I will:
-
-1. Examine the original diagram.
-2. Identify its inputs, neurons, synapses, and delays.
-3. Write down the logical expression it is intended to realize.
-4. Construct the corresponding network.
-5. Test different input combinations.
-6. Evaluate the logical expression independently.
-7. Compare the network output with the logical output.
-
-I will not assume that implementing the correct input-output function automatically means I have reproduced the exact topology shown in the original figure. I will compare my construction with the paper's diagrams and document any differences.
-
-**[INSERT SCREENSHOT: Original paper, page 7, Figures 1a–1d]**
-
-*Why I am including this passage:* These diagrams provide the concrete network constructions that I will attempt to reproduce and test.
-
-**Deliverables:**
-
-- Four network constructions.
-- Tests for each construction.
-- Comparisons between network outputs and logical evaluations.
-- Notes on any differences from the original diagrams.
-
-**Status:** Not started.
-
-# Stage 7 — Reconstructing the thermal illusion
-
-**File:** `experiments/thermal_illusion.py`
-
-**Objective:** Reconstruct the paper's example of heat sensation produced by transient cooling.
-
-The paper provides an example involving two types of cutaneous receptors: one associated with heat and another associated with cold.
-
-The authors describe a situation in which briefly applying a cold object to the skin can produce a sensation of heat, whereas applying it for a longer period produces a sensation of cold.
-
-They express the required behavior using temporal propositional expressions and then construct a network using the fundamental elements from Figures 1a–1d.
-
-I will investigate this example as an integration test of the simulator and temporal logic implementation.
-
-The equations, expressed in modern notation, are:
-
-\[
-N_3(t)=N_1(t-1)\lor
-\left[N_2(t-3)\land\neg N_2(t-2)\right]
-\]
-
-\[
-N_4(t)=N_2(t-2)\land N_2(t-1)
-\]
-
-Here:
-
-- \(N_1\) represents heat receptor activity.
-- \(N_2\) represents cold receptor activity.
-- \(N_3\) represents the heat-sensation output.
-- \(N_4\) represents the cold-sensation output.
-
-I will first implement these equations directly using the temporal logic evaluator.
-
-Then I will construct a neural network that realizes the same behavior.
-
-This gives me two independent ways of calculating the expected output, which I can compare.
-
-**[INSERT SCREENSHOT: Original paper, pages 8–9, thermal illusion example and network construction]**
-
-*Why I am including this passage:* This example demonstrates how the authors use temporal logical expressions to specify a behavior and then construct a network that realizes it.
-
-**Deliverables:**
-
-- Direct implementation of the equations.
-- Short and long cooling input experiments.
-- A network construction.
-- Comparison between logical and simulated outputs.
-
-**Status:** Not started.
-
-# Stage 8 — Reconstructing Theorem I
-
-**Objective:** Translate a network of order zero into temporal propositional expressions.
-
-Theorem I states:
-
-> Every net of order 0 can be solved in terms of temporal propositional expressions.
-
-I want to understand the proof before attempting to automate it.
-
-The central idea is to express the firing condition of a neuron in terms of the activity of the neurons connected to it.
-
-For a neuron with multiple excitatory inputs and inhibitory inputs, its firing condition can be represented as a finite disjunction of qualifying combinations of excitatory inputs, with inhibitory conditions accounted for.
-
-Because a network of order zero has no cycles, I should be able to repeatedly substitute expressions for upstream neurons until I obtain an expression in terms of the peripheral afferents.
-
-I will first work through a small example manually.
-
-Only after understanding the substitution process will I implement a network-to-expression translator.
-
-**[INSERT SCREENSHOT: Original paper, page 6, Theorem I and its proof]**
-
-*Why I am including this passage:* This is the central construction I need to understand before implementing the translator.
-
-**Deliverables:**
-
-- A manually derived example.
-- An explanation of the substitution procedure.
-- A network-to-TPE translator.
-- Tests comparing the resulting expression with network behavior.
-
-**Status:** Not started.
-
-# Stage 9 — Reconstructing Theorem II
-
-**Objective:** Construct a network from a temporal propositional expression.
-
-Theorem II states:
-
-> Every TPE is realizable by a net of order zero.
-
-This is the reverse direction of Theorem I.
-
-The four fundamental constructions from Figures 1a–1d provide the building blocks.
-
-I will investigate how larger expressions can be constructed by combining smaller networks.
-
-For example, if I can construct networks for two expressions, how can I combine them to construct a network for their conjunction or disjunction?
-
-I will begin with manually constructed examples before attempting to automate the process.
-
-The eventual goal is an expression-to-network compiler.
-
-**[INSERT SCREENSHOT: Original paper, pages 6–7, Theorem II and its proof]**
-
-*Why I am including this passage:* This proof explains how the fundamental network constructions can be combined to realize arbitrary expressions generated by the TPE grammar.
-
-**Deliverables:**
-
-- Manually constructed examples.
-- A reusable composition procedure.
-- An expression-to-network compiler.
-- Tests comparing the compiled network with direct expression evaluation.
-
-**Status:** Not started.
-
-# Stage 10 — Reconstructing Theorem III
-
-**Objective:** Investigate the paper's characterization of temporal propositional expressions.
-
-Theorem III provides a condition for determining whether an expression built from propositional variables and logical operations qualifies as a TPE.
-
-The paper relates this condition to truth tables and Hilbert disjunctive normal form.
-
-I will work through the statement and proof before implementing any test.
-
-I want to understand:
-
-- What the condition says.
-- Why it is necessary.
-- Why it is sufficient.
-- How it relates to the TPE grammar.
-- Whether I can construct examples that satisfy or violate the condition.
-
-I will then write small programs to evaluate finite expressions and compare the results with the grammar-based construction.
-
-The computational tests will support my understanding, but they will not replace the general mathematical proof.
-
-**[INSERT SCREENSHOT: Original paper, page 7, Theorem III]**
-
-**Deliverables:**
-
-- A mathematical explanation of the characterization.
-- Worked examples.
-- A truth-table-based experiment.
-- Tests for selected expressions.
-
-**Status:** Not started.
-
-# Stage 11 — Investigating Theorems IV–VII
-
-**Objective:** Investigate the equivalences between different assumptions about neuronal behavior.
-
-After establishing the relationship between networks and temporal propositional expressions, the paper considers several alternative physiological assumptions.
-
-The authors investigate whether different assumptions can be represented by equivalent networks, potentially with different timing.
-
-The results include:
-
-| Theorem | Subject |
-|---|---|
-| IV | Relative and absolute inhibition are equivalent in the extended sense. |
-| V | Extinction is equivalent to absolute inhibition. |
-| VI | Facilitation and temporal summation may be replaced by spatial summation. |
-| VII | Alterable synapses can be replaced by circles. |
-
-I will approach these results individually.
-
-For each one, I will identify the original assumption, the alternative assumption, and the construction used to establish equivalence.
-
-Where possible, I will implement small networks under both assumptions and compare their behavior.
-
-I will be careful not to assume that equivalence means identical network structure or identical timing. The paper's definition allows for a different realizing network and differences in time.
-
-**[INSERT SCREENSHOTS: Original paper, pages 9–11, Theorems IV–VII]**
-
-**Deliverables:**
-
-- A separate explanation of each theorem.
-- Small example networks.
-- Comparisons of input-output behavior.
-- Notes on timing and structural differences.
-
-**Status:** Not started.
-
-# Stage 12 — Investigating cyclic networks
-
-**Objective:** Extend the reconstruction to networks containing circular paths.
-
-The earlier results concern networks without cycles.
-
-The paper then introduces cyclic networks, in which activity can propagate around a circuit and regenerate activity in neurons that participated in the circuit.
-
-This changes the nature of the problem.
-
-In an acyclic network, repeated substitution eventually reaches the peripheral inputs. In a cyclic network, the dependence on previous activity can extend indefinitely into the past.
-
-The authors introduce recursive functions to describe these more complicated relationships.
-
-I will need to understand this formalism before extending the simulator.
-
-I expect this stage to require additional machinery for representing and investigating cyclic behavior.
-
-**[INSERT SCREENSHOT: Original paper, pages 11 onward, definition and discussion of cyclic networks]**
-
-**Deliverables:**
-
-- A precise definition of a cyclic network in my own words.
-- Examples of networks containing cycles.
-- A study of the recursive descriptions used in the paper.
-- An extension of the simulator where necessary.
-
-**Status:** Not started.
-
-# Stage 13 — Reconstructing Theorems VIII–X
-
-**Objective:** Investigate the paper's results concerning cyclic networks and recursive functions.
-
-I will work through these theorems after understanding the preceding definitions and constructions.
-
-For each theorem, I will record:
-
-- The exact statement.
-- The definitions required to understand it.
-- The proof strategy.
-- Any constructions or examples provided by the authors.
-- What I can reproduce computationally.
-- What remains a mathematical argument rather than a simulation.
-
-I will not claim to have reproduced a theorem merely because I have implemented an example related to it.
-
-**Deliverables:**
-
-- Worked notes for Theorems VIII–X.
-- Relevant computational experiments.
-- A record of which proof steps I have independently reconstructed.
-
-**Status:** Not started.
-
-# 7. Implementation principles
-
-Throughout this project, I want the implementation to remain faithful to the mathematical model while keeping the code understandable.
-
-I will follow a few principles.
-
-## 7.1 Build from simple components
-
-I will not begin with a large framework or a neural-network library.
-
-The basic mechanisms should be implemented directly in Python so that I can inspect exactly how each neuron, synapse, and time step works.
-
-## 7.2 Separate the simulator from the logic
-
-The neural network simulator and the temporal logic evaluator should be independent components.
-
-This is important because I want to compare their outputs.
-
-If a network and its corresponding expression produce different results, I should be able to investigate the discrepancy without one implementation depending on the other.
-
-## 7.3 Test every component independently
-
-I will write tests for individual neurons, synapses, networks, and logical expressions.
-
-For more complex constructions, I will compare the output of the simulated network against the output predicted by the corresponding logical expression.
-
-## 7.4 Preserve the original assumptions
-
-Whenever I simplify or reinterpret something for implementation purposes, I will document it.
-
-For example, a discrete-time simulator needs a convention for the initial state before time zero. That convention should not be confused with a claim made explicitly by the original paper.
-
-## 7.5 Distinguish reproduction from extension
-
-If I introduce an additional feature that is useful for the implementation but is not part of the paper's original model, I will identify it as an implementation choice or extension.
-
-# 8. Reproduction progress
-
-I will use this table to keep track of the actual progress of the project.
-
-| Component / result | Status |
-|---|---|
-| Project setup and research notes | Not started |
-| Individual neuron | Not started |
-| Excitatory and inhibitory synapses | Not started |
-| Synaptic delays | Not started |
-| Discrete-time network simulator | Not started |
-| Simulation interface | Not started |
-| Temporal propositional expressions | Not started |
-| Figures 1a–1d | Not started |
-| Thermal illusion | Not started |
-| Theorem I | Not started |
-| Theorem II | Not started |
-| Theorem III | Not started |
-| Theorems IV–VII | Not started |
-| Cyclic networks | Not started |
-| Theorems VIII–X | Not started |
-
-I will update these statuses only when I have completed the relevant implementation, derivation, or experiment.
-
-# 9. What I want to learn from this reconstruction
-
-By the end of this project, I want to be able to explain the paper's central ideas without relying on a high-level summary.
-
-More specifically, I want to understand:
-
-1. How binary neuronal activity can be represented using propositions.
-2. How synaptic connections and excitation thresholds give rise to logical relationships.
-3. Why temporal information is necessary to describe neuronal networks.
-4. How temporal propositional expressions are constructed.
-5. How networks without cycles can be described using these expressions.
-6. How logical expressions can be realized through networks.
-7. Why the authors investigate equivalences between different physiological assumptions.
-8. How circular paths introduce recursive behavior.
-9. What the paper establishes about the relationship between neural networks, logic, and computation.
-
-I also want to become more comfortable translating mathematical descriptions into executable models and using computational experiments to investigate theoretical claims.
+I implemented `Network.step()` to advance a network by one time step and `Network.run()` to execute multiple time steps.
+So, in a way, I can already simulate a network, but there are two issues:
+
+1. Specifying external inputs should be convenient. I should not have to manually construct a dictionary of Boolean values for every time step.
+
+2. Inspecting the resulting activity should be straightforward. A list of dictionaries is useful for Python, but it is not particularly easy to inspect visually.
+
+Hence, a separate simulation interface to handle these tasks was needed. So to have the convenient way to run experiments, I created `simulation.py`
+
+First, I needed a way to describe which external sources are active at each time step.
+
+For example, in a network with two external sources, A and B, I could represent an input schedule using dictionaries:
+
+```python
+input_schedule = {
+    0: {"A": True, "B": False},
+    1: {"A": False, "B": True},
+    2: {"A": True, "B": True},
+}
+```
+However, this requires explicitly specifying both active and inactive sources. For many experiments, I only care about which sources are active. I would therefore also like to support a shorter representation:
+
+```python
+input_schedule = {
+    0: {"A"},
+    1: {"B"},
+    2: {"A", "B"},
+}
+```
+Self explanatory. 
+
+I now have two ways to describe the same input schedule. So instead of forcing the rest of the simulation code to handle both formats, I normalized them into one common representation.
+
+I introduced `normalize_schedule()` to convert different input representations into a consistent dictionary of Boolean mappings.
+
+```python
+def normalize_schedule(schedule):
+    """Convert {time: {'A': True}} or {time: {'A', 'B'}} to bool mappings."""
+    normalized = {}
+    for time, active in (schedule or {}).items():
+        if isinstance(active, Mapping):
+            normalized[int(time)] = {str(k): bool(v) for k, v in active.items()}
+        else:
+            normalized[int(time)] = {str(name): True for name in active}
+    return normalized
+```
+
+For instance,
+```python
+{
+    0: {"A", "B"},
+    1: {"B"}
+}
+```
+becomes:
+```python
+{
+    0: {"A": True, "B": True},
+    1: {"B": True}
+}
+```
+Now with input normalization handled separately, I created a small `simulate()` function.
+
+```python
+def simulate(network: Network, steps: int, input_schedule=None):
+    return network.run(steps, normalize_schedule(input_schedule))
+```
+Notice I dont really implement any new simulation logic. The `simulate` function delegates the actual execution to `Network.run()`, which already handles advancing the network, processing external inputs, and recording neuronal activity.
+
+After running a simulation, I receive a list of dictionaries. Which is okayish! But since we are chasing convenience here, I think tabular view would be nicer to inspect. So I built a `print_trace()` method to display the results as a table. 
+
+```python
+def print_trace(outputs, columns: Iterable[str] | None = None) -> None:
+    outputs = list(outputs)
+    if columns is None:
+        columns = sorted({key for row in outputs for key in row})
+    columns = list(columns)
+    print("t  " + "  ".join(columns))
+    for t, row in enumerate(outputs):
+        bits = ["1" if row.get(name, False) else "0" for name in columns]
+        print(f"{t:<2} " + "  ".join(bits))
+```
+This function will collect the names of neurons appearing in the output $\rightarrow$ Sort their names to produce consistent column ordering $\rightarrow$ Iterate through the recorded outputs. $\rightarrow$ Converts Boolean activity into binary values: True becomes 1, and False becomes 0. $\rightarrow$ Prints one row for each time step.
+
+Like:
+
+```python
+t   A   B
+0   1   0
+1   0   1
+2   1   1
+```
 
 # 10. References and working material
 
@@ -903,8 +804,8 @@ McCulloch, W. S., & Pitts, W. (1943). *A Logical Calculus of the Ideas Immanent 
 
 **Working conventions**
 
-- I will use modern mathematical notation where it improves readability, while preserving the meaning of the original paper.
-- I will identify when a statement is taken directly from the paper and when it is my own interpretation.
+- I used modern mathematical notation where it improves readability, while preserving the meaning of the original paper.
+- I identified when a statement is taken directly from the paper and when it is my own interpretation.
 - Screenshots inserted throughout this README will refer to the corresponding sections of the original paper.
 - Computational results will be reported with the input conditions, implementation assumptions, and tests used to obtain them.
 
